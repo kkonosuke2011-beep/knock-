@@ -79,7 +79,7 @@ struct CameraView: View {
                         ProgressView()
                             .progressViewStyle(.circular)
                     }
-                    Text("この教科で進む")
+                    Text("この写真で進む")
                 }
             }
             .buttonStyle(PrimaryButtonStyle())
