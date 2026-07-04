@@ -11,83 +11,91 @@ struct CameraView: View {
     @State private var navigateToAnswerMode = false
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text(subject.rawValue)
-                .font(.title2)
-                .fontWeight(.semibold)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        ZStack {
+            Color.black.ignoresSafeArea()
 
             if camera.authorizationDenied {
-                ContentUnavailableView(
-                    "カメラを使えません",
-                    systemImage: "camera.fill",
-                    description: Text("設定からカメラの許可を有効にしてください。")
-                )
-                .frame(maxHeight: .infinity)
+                unavailableCameraView
             } else {
-                ZStack(alignment: .bottom) {
-                    Group {
-                        if let capturedImage = camera.capturedImage {
-                            Image(uiImage: capturedImage)
-                                .resizable()
-                                .scaledToFit()
-                        } else {
-                            CameraPreview(session: camera.session)
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                cameraPreview
+                    .ignoresSafeArea()
+            }
 
-                    HStack(spacing: 12) {
-                        Button("再撮影") {
-                            camera.resetCapture()
-                        }
-                        .buttonStyle(SecondaryButtonStyle())
-
-                        Button {
-                            runOCR()
-                        } label: {
-                            HStack(spacing: 8) {
-                                if isRunningOCR {
-                                    ProgressView()
-                                        .progressViewStyle(.circular)
-                                }
-                                Text("この教科で進む")
-                            }
-                        }
-                        .buttonStyle(PrimaryButtonStyle())
-                        .disabled(camera.capturedImage == nil || isRunningOCR)
-                    }
+            VStack {
+                Spacer()
+                controls
                     .padding()
-                }
-                .frame(maxHeight: .infinity)
             }
-
-            Button {
-                camera.capturePhoto()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "circle.inset.filled")
-                    Text(camera.capturedImage == nil ? "撮影する" : "撮り直す")
-                }
-            }
-            .buttonStyle(PrimaryButtonStyle())
-            .disabled(camera.authorizationDenied)
         }
-        .padding()
         .navigationTitle(subject.rawValue)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            camera.start()
-        }
-        .onDisappear {
-            camera.stop()
-        }
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .onAppear(perform: camera.start)
+        .onDisappear(perform: camera.stop)
         .navigationDestination(isPresented: $navigateToAnswerMode) {
             AIServiceView(
                 subject: subject.rawValue,
                 recognizedText: recognizedText
             )
         }
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        if camera.capturedImage == nil {
+            shutterButton
+        } else {
+            confirmationButtons
+        }
+    }
+
+    private var unavailableCameraView: some View {
+        ContentUnavailableView(
+            "カメラを使えません",
+            systemImage: "camera.fill",
+            description: Text("設定からカメラの許可を有効にしてください。")
+        )
+    }
+
+    @ViewBuilder
+    private var cameraPreview: some View {
+        if let capturedImage = camera.capturedImage {
+            Image(uiImage: capturedImage)
+                .resizable()
+                .scaledToFit()
+        } else {
+            CameraPreview(session: camera.session)
+        }
+    }
+
+    private var confirmationButtons: some View {
+        HStack(spacing: 12) {
+            Button("再撮影", action: camera.resetCapture)
+                .buttonStyle(SecondaryButtonStyle())
+
+            Button(action: runOCR) {
+                HStack(spacing: 8) {
+                    if isRunningOCR {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                    }
+                    Text("この教科で進む")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(isRunningOCR)
+        }
+    }
+
+    private var shutterButton: some View {
+        Button(action: camera.capturePhoto) {
+            HStack(spacing: 8) {
+                Image(systemName: "circle.inset.filled")
+                Text("撮影する")
+            }
+        }
+        .buttonStyle(PrimaryButtonStyle())
+        .disabled(camera.authorizationDenied)
     }
 
     private func runOCR() {
@@ -104,24 +112,26 @@ struct CameraView: View {
 
 final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureDelegate {
     let session = AVCaptureSession()
-    let photoOutput = AVCapturePhotoOutput()
+    private let photoOutput = AVCapturePhotoOutput()
+    private let sessionQueue = DispatchQueue(label: "camera.session.queue")
+    private var isConfigured = false
 
     @Published var capturedImage: UIImage?
     @Published var authorizationDenied = false
 
-    private let sessionQueue = DispatchQueue(label: "camera.session.queue")
-    private var configured = false
+    // MARK: - Session Lifecycle
 
     func start() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
-            startSession()
+            authorizationDenied = false
+            configureAndStart()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 DispatchQueue.main.async {
                     self?.authorizationDenied = !granted
                     if granted {
-                        self?.startSession()
+                        self?.configureAndStart()
                     }
                 }
             }
@@ -137,32 +147,39 @@ final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureD
         }
     }
 
-    func resetCapture() {
-        capturedImage = nil
-        startSession()
-    }
+    // MARK: - Capture
 
     func capturePhoto() {
+        // 撮影済みなら再撮影に切り替える
         guard capturedImage == nil else {
             resetCapture()
             return
         }
 
-        let settings = AVCapturePhotoSettings()
-        settings.flashMode = .auto
-        photoOutput.capturePhoto(with: settings, delegate: self)
+        sessionQueue.async {
+            guard self.session.isRunning else { return }
+            let settings = AVCapturePhotoSettings()
+            settings.flashMode = .auto
+            self.photoOutput.capturePhoto(with: settings, delegate: self)
+        }
     }
 
-    private func startSession() {
+    func resetCapture() {
+        capturedImage = nil
+        configureAndStart()
+    }
+
+    // MARK: - Setup
+
+    private func configureAndStart() {
         sessionQueue.async {
-            self.configureIfNeeded()
-            guard !self.session.isRunning else { return }
+            guard self.configureIfNeeded(), !self.session.isRunning else { return }
             self.session.startRunning()
         }
     }
 
-    private func configureIfNeeded() {
-        guard !configured else { return }
+    private func configureIfNeeded() -> Bool {
+        guard !isConfigured else { return true }
 
         session.beginConfiguration()
         session.sessionPreset = .photo
@@ -172,14 +189,17 @@ final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureD
               session.canAddInput(input),
               session.canAddOutput(photoOutput) else {
             session.commitConfiguration()
-            return
+            return false
         }
 
         session.addInput(input)
         session.addOutput(photoOutput)
         session.commitConfiguration()
-        configured = true
+        isConfigured = true
+        return true
     }
+
+    // MARK: - AVCapturePhotoCaptureDelegate
 
     func photoOutput(
         _ output: AVCapturePhotoOutput,
@@ -192,8 +212,8 @@ final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureD
 
         DispatchQueue.main.async {
             self.capturedImage = image
-            self.stop()
         }
+        stop()
     }
 }
 
