@@ -260,7 +260,7 @@ private struct SecondaryButtonStyle: ButtonStyle {
             .font(.title3)
             .frame(maxWidth: .infinity)
             .padding()
-            .background(Color.gray.opacity(configuration.isPressed ? 0.18 : 0.12))
+            .background(Color.white.opacity(configuration.isPressed ? 0.9 : 0.8))
             .foregroundColor(.primary)
             .cornerRadius(12)
     }
